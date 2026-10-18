@@ -5,7 +5,7 @@ text on your machine, and answers questions about it using a local LLM. Nothing
 leaves your computer except the crawler's requests to the sites themselves.
 
 ```
-butler crawl https://example.com --max-pages 200   # crawl, extract text, save pages
+butler crawl -max-pages 200 https://example.com    # crawl, extract text, save pages
 butler index                                       # chunk + embed pages into the store
 butler ask "how does X work?"                      # retrieve chunks → local LLM → answer + sources
 ```
@@ -129,7 +129,7 @@ this project.
 | 0 | `butler <subcommand>` prints which command ran; a stub `crawler` package | modules, `package main`, imports, `os.Args`, `switch`, exported names | [00-hello-subcommands.md](milestones/00-hello-subcommands.md) |
 | 1 | Fetch one page; print status and size | `net/url`, `net/http`, multiple returns, `if err != nil`, `%w`, `defer`, `io.ReadAll`, first struct | [01-fetch-one-page.md](milestones/01-fetch-one-page.md) |
 | 2 | Find all links on a page as absolute URLs | `go get`, `x/net/html` tokenizer, `for range`, `errors.Is`, maps as sets, table-driven tests | [02-find-links.md](milestones/02-find-links.md) |
-| 3 | Breadth-first crawl with same-host, max pages/depth, delay, User-Agent, robots.txt | structs, maps as sets, slice-as-queue, `time`, `flag` | *coming* |
+| 3 | Breadth-first crawl with same-host, max pages/depth, delay, User-Agent, robots.txt | structs, maps as sets, slice-as-queue, `time`, `flag` | [03-crawl.md](milestones/03-crawl.md) |
 | 4 | Extract main text and save pages to SQLite | `go get`, `database/sql`, placeholders | *coming* |
 | 5 | Split pages into overlapping chunks | `strings.Fields`, slice expressions, edge cases | *coming* |
 | 6 | Embed chunks via Ollama and store vectors | struct tags, `encoding/json`, `http.Post`, BLOBs | *coming* |
