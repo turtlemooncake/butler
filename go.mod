@@ -1,3 +1,5 @@
 module butler
 
-go 1.23.4
+go 1.26.0
+
+require golang.org/x/net v0.61.0

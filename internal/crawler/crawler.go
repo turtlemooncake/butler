@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -53,7 +54,7 @@ func fetch(rawURL string) (Page, error) {
 	}
 
 	result := Page{
-		URL:         rawURL,
+		URL:         resp.Request.URL.String(),
 		Status:      resp.Status,
 		ContentType: resp.Header.Get("Content-Type"),
 		Body:        body,
@@ -72,5 +73,26 @@ func Crawl(start string) error {
 	fmt.Printf("status:       %s\n", page.Status)
 	fmt.Printf("content-type: %s\n", page.ContentType)
 	fmt.Printf("size:         %d bytes\n", len(page.Body))
+
+	if !strings.HasPrefix(page.ContentType, "text/html") {
+		fmt.Println("Not HTML, no links")
+		return nil
+	}
+
+	base, err := url.Parse(page.URL)
+	if err != nil {
+		return err
+	}
+
+	newLinks, err := extractLinks(base, page.Body)
+	if err != nil {
+		return fmt.Errorf("extracting links from %s: %w", page.URL, err)
+	}
+
+	fmt.Printf("links:        %d\n", len(newLinks))
+	for _, link := range newLinks {
+		fmt.Printf("  %s\n", link)
+	}
+
 	return nil
 }
