@@ -127,7 +127,7 @@ this project.
 | # | Goal | You'll learn | File |
 |---|---|---|---|
 | 0 | `butler <subcommand>` prints which command ran; a stub `crawler` package | modules, `package main`, imports, `os.Args`, `switch`, exported names | [00-hello-subcommands.md](milestones/00-hello-subcommands.md) |
-| 1 | Fetch one page; print status and size | multiple returns, `if err != nil`, `defer`, `io.ReadAll` | *coming* |
+| 1 | Fetch one page; print status and size | `net/url`, `net/http`, multiple returns, `if err != nil`, `%w`, `defer`, `io.ReadAll`, first struct | [01-fetch-one-page.md](milestones/01-fetch-one-page.md) |
 | 2 | Find all links on a page as absolute URLs | `net/url`, `x/net/html`, slices, `for range` | *coming* |
 | 3 | Breadth-first crawl with same-host, max pages/depth, delay, User-Agent, robots.txt | structs, maps as sets, slice-as-queue, `time`, `flag` | *coming* |
 | 4 | Extract main text and save pages to SQLite | `go get`, `database/sql`, placeholders | *coming* |
