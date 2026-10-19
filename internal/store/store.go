@@ -91,3 +91,34 @@ func (s *Store) GetPage(url string) (Page, error) {
 
 	return p, nil
 }
+
+func (s *Store) ListPages() ([]Page, error) {
+	rows, err := s.db.Query(`SELECT url, title, text, fetched_at FROM pages ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pages []Page
+	for rows.Next() {
+		var p Page
+		var fetchedAt string
+
+		err := rows.Scan(&p.URL, &p.Title, &p.Text, &fetchedAt)
+		if err != nil {
+			return nil, err
+		}
+
+		p.FetchedAt, err = time.Parse(time.RFC3339, fetchedAt)
+		if err != nil {
+			return nil, err
+		}
+
+		pages = append(pages, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return pages, nil
+}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"butler/internal/chunk"
 	"butler/internal/crawler"
 	"butler/internal/extract"
 	"butler/internal/store"
@@ -72,6 +73,73 @@ func runCrawl(args []string) error {
 	return nil
 }
 
+// splits every stored page into chunks
+func runIndex(args []string) error {
+	fs := flag.NewFlagSet("index", flag.ExitOnError)
+	dbPath := fs.String("db", "butler.db", "SQLite database file")
+	size := fs.Int("size", 200, "words per chunk")
+	overlap := fs.Int("overlap", 40, "words shared by neighbouring chunks")
+	show := fs.String("show", "", "print the chunks of this one URL")
+
+	fs.Parse(args)
+
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: butler index [flags]")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+
+	// Check the sizes before opening the database
+	if _, err := chunk.Split("", *size, *overlap); err != nil {
+		return err
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	if *show != "" {
+		p, err := st.GetPage(*show)
+		if err != nil {
+			return fmt.Errorf("%s: %w", *show, err)
+		}
+		chunks, err := chunk.Split(p.Text, *size, *overlap)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("%s: %d words, %d chunks\n", p.URL, len(strings.Fields(p.Text)), len(chunks))
+		for i, c := range chunks {
+			fmt.Printf("\n--- chunk %d of %d ---\n%s\n", i+1, len(chunks), c)
+		}
+		return nil
+	}
+
+	pages, err := st.ListPages()
+	if err != nil {
+		return err
+	}
+	if len(pages) == 0 {
+		fmt.Printf("no pages in %s; run \"butler crawl\" first\n", *dbPath)
+		return nil
+	}
+
+	total := 0
+	for _, p := range pages {
+		chunks, err := chunk.Split(p.Text, *size, *overlap)
+		if err != nil {
+			return err
+		}
+		total += len(chunks)
+		fmt.Printf("%3d chunks  %s  (%d words)\n", len(chunks), p.URL, len(strings.Fields(p.Text)))
+	}
+
+	fmt.Printf("%d pages, %d chunks (size %d words, overlap %d)\n", len(pages), total, *size, *overlap)
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -87,7 +155,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "index":
-		fmt.Println("index: not implemented yet")
+		if err := runIndex(args); err != nil {
+			fmt.Fprintln(os.Stderr, "index:", err)
+			os.Exit(1)
+		}
 	case "ask":
 		if len(args) == 0 {
 			fmt.Fprintln(os.Stderr, "usage: butler ask <question>")
