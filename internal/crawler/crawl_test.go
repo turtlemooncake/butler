@@ -46,7 +46,11 @@ func TestCrawl(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			requested = nil
-			got, err := Crawl(srv.URL+"/", tc.opts)
+			var got []string
+			err := Crawl(srv.URL+"/", tc.opts, func(p Page) error {
+				got = append(got, p.URL)
+				return nil
+			})
 			if err != nil {
 				t.Fatalf("Crawl: %v", err)
 			}

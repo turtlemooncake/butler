@@ -130,8 +130,8 @@ this project.
 | 1 | Fetch one page; print status and size | `net/url`, `net/http`, multiple returns, `if err != nil`, `%w`, `defer`, `io.ReadAll`, first struct | [01-fetch-one-page.md](milestones/01-fetch-one-page.md) |
 | 2 | Find all links on a page as absolute URLs | `go get`, `x/net/html` tokenizer, `for range`, `errors.Is`, maps as sets, table-driven tests | [02-find-links.md](milestones/02-find-links.md) |
 | 3 | Breadth-first crawl with same-host, max pages/depth, delay, User-Agent, robots.txt | structs, maps as sets, slice-as-queue, `time`, `flag` | [03-crawl.md](milestones/03-crawl.md) |
-| 4 | Extract main text and save pages to SQLite | `go get`, `database/sql`, placeholders | *coming* |
-| 5 | Split pages into overlapping chunks | `strings.Fields`, slice expressions, edge cases | *coming* |
+| 4 | Extract main text and save pages to SQLite | `go get`, `database/sql`, placeholders | [04-extract-and-store.md](milestones/04-extract-and-store.md) |
+| 5 | Split pages into overlapping chunks | `strings.Fields`, slice expressions, edge cases | [05-chunk.md](milestones/05-chunk.md) |
 | 6 | Embed chunks via Ollama and store vectors | struct tags, `encoding/json`, `http.Post`, BLOBs | *coming* |
 | 7 | `butler ask`: retrieve top-k, prompt the chat model, print answer + sources | `math`, `sort.Slice`, closures, `strings.Builder` | *coming* |
 | 8 | Polish: concurrent crawl, streaming answers, re-crawl, `stats` | goroutines, channels, `sync`, rate limiting | *coming* |
