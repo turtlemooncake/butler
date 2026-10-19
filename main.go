@@ -10,6 +10,7 @@ import (
 	"butler/internal/chunk"
 	"butler/internal/crawler"
 	"butler/internal/extract"
+	"butler/internal/ollama"
 	"butler/internal/store"
 )
 
@@ -80,6 +81,9 @@ func runIndex(args []string) error {
 	size := fs.Int("size", 200, "words per chunk")
 	overlap := fs.Int("overlap", 40, "words shared by neighbouring chunks")
 	show := fs.String("show", "", "print the chunks of this one URL")
+	model := fs.String("model", "nomic-embed-text", "Ollama embedding model")
+	ollamaURL := fs.String("ollama", ollama.DefaultURL, "Ollama server URL")
+	force := fs.Bool("force", false, "re-embed every page, not just new ones")
 
 	fs.Parse(args)
 
@@ -89,7 +93,6 @@ func runIndex(args []string) error {
 		os.Exit(1)
 	}
 
-	// Check the sizes before opening the database
 	if _, err := chunk.Split("", *size, *overlap); err != nil {
 		return err
 	}
@@ -117,26 +120,57 @@ func runIndex(args []string) error {
 		return nil
 	}
 
-	pages, err := st.ListPages()
+	if *force {
+		if err := st.DeleteAllChunks(); err != nil {
+			return err
+		}
+	}
+
+	pages, err := st.PagesToIndex()
 	if err != nil {
 		return err
 	}
-	if len(pages) == 0 {
-		fmt.Printf("no pages in %s; run \"butler crawl\" first\n", *dbPath)
-		return nil
-	}
 
-	total := 0
-	for _, p := range pages {
-		chunks, err := chunk.Split(p.Text, *size, *overlap)
+	client := &ollama.Client{BaseURL: *ollamaURL}
+	indexed, added := 0, 0
+	for i, p := range pages {
+		texts, err := chunk.Split(p.Text, *size, *overlap)
 		if err != nil {
 			return err
 		}
-		total += len(chunks)
-		fmt.Printf("%3d chunks  %s  (%d words)\n", len(chunks), p.URL, len(strings.Fields(p.Text)))
+		if len(texts) == 0 {
+			continue
+		}
+
+		// nomic-embed-text expects this prefix on text that will be searched.
+		inputs := make([]string, len(texts))
+		for j, t := range texts {
+			inputs[j] = "search_document: " + t
+		}
+
+		vecs, err := client.Embed(*model, inputs)
+		if err != nil {
+			return fmt.Errorf("embedding %s: %w", p.URL, err)
+		}
+
+		chunks := make([]store.Chunk, len(texts))
+		for j := range texts {
+			chunks[j] = store.Chunk{Text: texts[j], Embedding: vecs[j]}
+		}
+		if err := st.SaveChunks(p.URL, chunks); err != nil {
+			return err
+		}
+
+		indexed++
+		added += len(chunks)
+		fmt.Printf("[%d/%d] %s  %d chunks\n", i+1, len(pages), p.URL, len(chunks))
 	}
 
-	fmt.Printf("%d pages, %d chunks (size %d words, overlap %d)\n", len(pages), total, *size, *overlap)
+	total, err := st.CountChunks()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("indexed %d pages, %d chunks (%d in total)\n", indexed, added, total)
 	return nil
 }
 

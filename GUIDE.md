@@ -132,8 +132,8 @@ this project.
 | 3 | Breadth-first crawl with same-host, max pages/depth, delay, User-Agent, robots.txt | structs, maps as sets, slice-as-queue, `time`, `flag` | [03-crawl.md](milestones/03-crawl.md) |
 | 4 | Extract main text and save pages to SQLite | `go get`, `database/sql`, placeholders | [04-extract-and-store.md](milestones/04-extract-and-store.md) |
 | 5 | Split pages into overlapping chunks | `strings.Fields`, slice expressions, edge cases | [05-chunk.md](milestones/05-chunk.md) |
-| 6 | Embed chunks via Ollama and store vectors | struct tags, `encoding/json`, `http.Post`, BLOBs | *coming* |
-| 7 | `butler ask`: retrieve top-k, prompt the chat model, print answer + sources | `math`, `sort.Slice`, closures, `strings.Builder` | *coming* |
+| 6 | Embed chunks via Ollama and store vectors | struct tags, `encoding/json`, `http.Post`, BLOBs, transactions | [06-embed.md](milestones/06-embed.md) |
+| 7 | `butler ask`: retrieve top-k, prompt the chat model, print answer + sources | `math`, `sort.Slice`, closures, `strings.Builder`, interfaces, `any`, SQL `JOIN` | [07-ask.md](milestones/07-ask.md) |
 | 8 | Polish: concurrent crawl, streaming answers, re-crawl, `stats` | goroutines, channels, `sync`, rate limiting | *coming* |
 
 ---

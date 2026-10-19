@@ -2,8 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
@@ -16,7 +18,15 @@ CREATE TABLE IF NOT EXISTS pages (
 	title      TEXT NOT NULL,
 	text       TEXT NOT NULL,
 	fetched_at TEXT NOT NULL
-)`
+); CREATE TABLE IF NOT EXISTS chunks (
+	id        INTEGER PRIMARY KEY,
+	page_id   INTEGER NOT NULL,
+	seq       INTEGER NOT NULL,
+	text      TEXT NOT NULL,
+	embedding BLOB NOT NULL,
+	UNIQUE (page_id, seq)
+)
+`
 
 const insertSchema = `
 INSERT INTO pages (url, title, text, fetched_at) VALUES (?, ?, ?, ?)
@@ -34,6 +44,11 @@ type Page struct {
 	Title     string
 	Text      string
 	FetchedAt time.Time
+}
+
+type Chunk struct {
+	Text      string
+	Embedding []float32
 }
 
 var ErrNotFound = errors.New("page not found")
@@ -56,7 +71,17 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) SavePage(p Page) error {
-	_, err := s.db.Exec(insertSchema, p.URL, p.Title, p.Text, p.FetchedAt.UTC().Format(time.RFC3339))
+	// If the page's text changed, its chunks are out of date: delete them so
+	// the next index embeds the page again.
+	_, err := s.db.Exec(`
+		DELETE FROM chunks WHERE page_id =
+			(SELECT id FROM pages WHERE url = ? AND text <> ?)`,
+		p.URL, p.Text)
+	if err != nil {
+		return fmt.Errorf("saving %s: %w", p.URL, err)
+	}
+
+	_, err = s.db.Exec(insertSchema, p.URL, p.Title, p.Text, p.FetchedAt.UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("saving %s: %w", p.URL, err)
 	}
@@ -92,8 +117,22 @@ func (s *Store) GetPage(url string) (Page, error) {
 	return p, nil
 }
 
+// ListPages returns every stored page, oldest first.
 func (s *Store) ListPages() ([]Page, error) {
-	rows, err := s.db.Query(`SELECT url, title, text, fetched_at FROM pages ORDER BY id`)
+	return s.queryPages(`SELECT url, title, text, fetched_at FROM pages ORDER BY id`)
+}
+
+func (s *Store) PagesToIndex() ([]Page, error) {
+	return s.queryPages(`
+		SELECT url, title, text, fetched_at FROM pages
+		WHERE id NOT IN (SELECT page_id FROM chunks)
+		ORDER BY id`)
+}
+
+// queryPages runs query, which must select url, title, text, fetched_at,
+// and returns the pages.
+func (s *Store) queryPages(query string) ([]Page, error) {
+	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
 	}
@@ -121,4 +160,72 @@ func (s *Store) ListPages() ([]Page, error) {
 	}
 
 	return pages, nil
+}
+
+// SaveChunks replaces all chunks of the page at url. It returns ErrNotFound
+// if there's no such page.
+func (s *Store) SaveChunks(url string, chunks []Chunk) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var pageID int64
+	err = tx.QueryRow(`SELECT id FROM pages WHERE url = ?`, url).Scan(&pageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("saving chunks for %s: %w", url, err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM chunks WHERE page_id = ?`, pageID); err != nil {
+		return fmt.Errorf("saving chunks for %s: %w", url, err)
+	}
+
+	for i, c := range chunks {
+		_, err := tx.Exec(`INSERT INTO chunks (page_id, seq, text, embedding) VALUES (?, ?, ?, ?)`,
+			pageID, i, c.Text, encodeVector(c.Embedding))
+		if err != nil {
+			return fmt.Errorf("saving chunks for %s: %w", url, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) CountChunks() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM chunks`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) DeleteAllChunks() error {
+	_, err := s.db.Exec(`DELETE FROM chunks`)
+	return err
+}
+
+// encodeVector packs v into 4 little-endian bytes per float.
+func encodeVector(v []float32) []byte {
+	b := make([]byte, 0, len(v)*4)
+	for _, f := range v {
+		b = binary.LittleEndian.AppendUint32(b, math.Float32bits(f))
+	}
+	return b
+}
+
+// decodeVector unpacks bytes written by encodeVector.
+func decodeVector(b []byte) ([]float32, error) {
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("cannot be vector, cannot be divided by 4")
+	}
+
+	v := make([]float32, len(b)/4)
+
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4 : i*4+4]))
+	}
+
+	return v, nil
 }
