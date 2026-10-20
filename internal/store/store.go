@@ -35,6 +35,12 @@ ON CONFLICT (url) DO UPDATE SET
 	text = excluded.text,
 	fetched_at = excluded.fetched_at`
 
+const allChunksQuery = `SELECT pages.url, pages.title, chunks.seq, chunks.text, chunks.embedding
+FROM chunks
+JOIN pages ON pages.id = chunks.page_id
+ORDER BY chunks.id
+`
+
 type Store struct {
 	db *sql.DB
 }
@@ -47,6 +53,15 @@ type Page struct {
 }
 
 type Chunk struct {
+	Text      string
+	Embedding []float32
+}
+
+// IndexedChunk = chunk + page of chunk
+type IndexedChunk struct {
+	URL       string
+	Title     string
+	Seq       int
 	Text      string
 	Embedding []float32
 }
@@ -228,4 +243,37 @@ func decodeVector(b []byte) ([]float32, error) {
 	}
 
 	return v, nil
+}
+
+func (s *Store) AllChunks() ([]IndexedChunk, error) {
+	rows, err := s.db.Query(allChunksQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	var chunks []IndexedChunk
+	for rows.Next() {
+		var ic IndexedChunk
+		var e []byte
+
+		err := rows.Scan(&ic.URL, &ic.Title, &ic.Seq, &ic.Text, &e)
+		if err != nil {
+			return nil, err
+		}
+
+		ic.Embedding, err = decodeVector(e)
+		if err != nil {
+			return nil, fmt.Errorf(`chunk decode yielded error. chunk: %s seq: %d. %w`, ic.URL, ic.Seq, err)
+		}
+
+		chunks = append(chunks, ic)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return chunks, nil
 }

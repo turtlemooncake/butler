@@ -11,6 +11,7 @@ import (
 	"butler/internal/crawler"
 	"butler/internal/extract"
 	"butler/internal/ollama"
+	"butler/internal/rag"
 	"butler/internal/store"
 )
 
@@ -174,6 +175,80 @@ func runIndex(args []string) error {
 	return nil
 }
 
+// finds the chunks closest to the question and asks the chat model
+func runAsk(args []string) error {
+	fs := flag.NewFlagSet("ask", flag.ExitOnError)
+	dbPath := fs.String("db", "butler.db", "SQLite database file")
+	k := fs.Int("k", 5, "how many chunks to give the chat model")
+	model := fs.String("model", "qwen3:8b", "Ollama chat model")
+	embedModel := fs.String("embed-model", "nomic-embed-text", "Ollama embedding model; must match the one index used")
+	ollamaURL := fs.String("ollama", ollama.DefaultURL, "Ollama server URL")
+	showChunks := fs.Bool("chunks", false, "print the matching chunks instead of asking the chat model")
+
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: butler ask [flags] <question>")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+	question := strings.Join(fs.Args(), " ")
+
+	if *k < 1 {
+		return fmt.Errorf("-k must be at least 1, got %d", *k)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	chunks, err := st.AllChunks()
+	if err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return fmt.Errorf("no chunks in %s; run \"butler index\" first", *dbPath)
+	}
+
+	// nomic-embed-text expects this prefix on the text doing the searching.
+	client := &ollama.Client{BaseURL: *ollamaURL}
+	vecs, err := client.Embed(*embedModel, []string{"search_query: " + question})
+	if err != nil {
+		return fmt.Errorf("embedding the question: %w", err)
+	}
+
+	hits, err := rag.TopK(vecs[0], chunks, *k)
+	if err != nil {
+		return err
+	}
+
+	if *showChunks {
+		for i, h := range hits {
+			fmt.Printf("[%d] %.2f  %s  (chunk %d)\n%s\n\n", i+1, h.Score, h.Chunk.URL, h.Chunk.Seq, h.Chunk.Text)
+		}
+		return nil
+	}
+
+	messages := []ollama.Message{
+		{Role: "system", Content: rag.SystemPrompt},
+		{Role: "user", Content: rag.BuildPrompt(question, hits)},
+	}
+	answer, err := client.Chat(*model, messages)
+	if err != nil {
+		return fmt.Errorf("asking %s: %w", *model, err)
+	}
+
+	fmt.Println(strings.TrimSpace(answer))
+	fmt.Println()
+	fmt.Println("Sources:")
+	for i, h := range hits {
+		fmt.Printf("  [%d] %.2f  %s\n", i+1, h.Score, h.Chunk.URL)
+	}
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -194,12 +269,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "ask":
-		if len(args) == 0 {
-			fmt.Fprintln(os.Stderr, "usage: butler ask <question>")
+		if err := runAsk(args); err != nil {
+			fmt.Fprintln(os.Stderr, "ask:", err)
 			os.Exit(1)
 		}
-		question := strings.Join(args, " ")
-		fmt.Println("ask:", question)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		usage()

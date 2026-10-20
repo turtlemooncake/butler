@@ -203,3 +203,61 @@ func TestChunks(t *testing.T) {
 	}
 	checkCount("after DeleteAllChunks", 0)
 }
+
+func TestAllChunks(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// 1. A fresh store has no chunks, and that isn't an error.
+	got, err := s.AllChunks()
+	if err != nil {
+		t.Fatalf("AllChunks on empty store: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("AllChunks on empty store = %+v, want none", got)
+	}
+
+	// 2. Two pages, with b's chunks saved before a's.
+	when := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	a := Page{URL: "https://example.com/a", Title: "A", Text: "text a", FetchedAt: when}
+	b := Page{URL: "https://example.com/b", Title: "B", Text: "text b", FetchedAt: when}
+	for _, p := range []Page{a, b} {
+		if err := s.SavePage(p); err != nil {
+			t.Fatalf("SavePage: %v", err)
+		}
+	}
+	if err := s.SaveChunks(b.URL, testChunks("b0", "b1")); err != nil {
+		t.Fatalf("SaveChunks b: %v", err)
+	}
+	if err := s.SaveChunks(a.URL, testChunks("a0")); err != nil {
+		t.Fatalf("SaveChunks a: %v", err)
+	}
+
+	// 3. Chunks come back in the order they were saved, each with its page.
+	got, err = s.AllChunks()
+	if err != nil {
+		t.Fatalf("AllChunks: %v", err)
+	}
+	want := []IndexedChunk{
+		{URL: b.URL, Title: "B", Seq: 0, Text: "b0"},
+		{URL: b.URL, Title: "B", Seq: 1, Text: "b1"},
+		{URL: a.URL, Title: "A", Seq: 0, Text: "a0"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("AllChunks returned %d chunks, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		g := got[i]
+		if g.URL != w.URL || g.Title != w.Title || g.Seq != w.Seq || g.Text != w.Text {
+			t.Errorf("chunk %d = {%s %s %d %s}, want {%s %s %d %s}",
+				i, g.URL, g.Title, g.Seq, g.Text, w.URL, w.Title, w.Seq, w.Text)
+		}
+		// The embedding survived the round trip through the BLOB column.
+		if !slices.Equal(g.Embedding, []float32{1, 2, 3}) {
+			t.Errorf("chunk %d embedding = %v, want [1 2 3]", i, g.Embedding)
+		}
+	}
+}
