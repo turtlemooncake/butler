@@ -134,7 +134,7 @@ this project.
 | 5 | Split pages into overlapping chunks | `strings.Fields`, slice expressions, edge cases | [05-chunk.md](milestones/05-chunk.md) |
 | 6 | Embed chunks via Ollama and store vectors | struct tags, `encoding/json`, `http.Post`, BLOBs, transactions | [06-embed.md](milestones/06-embed.md) |
 | 7 | `butler ask`: retrieve top-k, prompt the chat model, print answer + sources | `math`, `sort.Slice`, closures, `strings.Builder`, interfaces, `any`, SQL `JOIN` | [07-ask.md](milestones/07-ask.md) |
-| 8 | Polish: concurrent crawl, streaming answers, re-crawl, `stats` | goroutines, channels, `sync`, rate limiting | *coming* |
+| 8 | Polish: streaming answers, concurrent crawl, `refresh`, `stats` | streaming JSON, goroutines, `sync.WaitGroup`, `sync.Mutex`, `go test -race`, rate limiting | [08-polish.md](milestones/08-polish.md) |
 
 ---
 

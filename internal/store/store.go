@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS pages (
 	text      TEXT NOT NULL,
 	embedding BLOB NOT NULL,
 	UNIQUE (page_id, seq)
+); CREATE TABLE IF NOT EXISTS sites (
+	url TEXT PRIMARY KEY
 )
 `
 
@@ -276,4 +278,29 @@ func (s *Store) AllChunks() ([]IndexedChunk, error) {
 	}
 
 	return chunks, nil
+}
+
+// SaveSite remembers url as a crawl start, so refresh can crawl it again.
+func (s *Store) SaveSite(url string) error {
+	_, err := s.db.Exec(`INSERT INTO sites (url) VALUES (?) ON CONFLICT DO NOTHING`, url)
+	return err
+}
+
+// ListSites returns every saved crawl start. alphabetical order.
+func (s *Store) ListSites() ([]string, error) {
+	rows, err := s.db.Query(`SELECT url FROM sites ORDER BY url`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sites []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		sites = append(sites, u)
+	}
+	return sites, rows.Err()
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,11 +27,17 @@ type Options struct {
 	MaxPages int
 	MaxDepth int
 	Delay    time.Duration
+	Workers  int
 }
 
 type queued struct {
 	url   string
 	depth int
+}
+
+type result struct {
+	page Page
+	err  error
 }
 
 const userAgent = "butler/0.1"
@@ -95,73 +102,86 @@ func Crawl(start string, opts Options, handle func(Page) error) error {
 	seen := map[string]bool{start: true}
 	fetched, failed := 0, 0
 	delay := max(robots.CrawlDelay, opts.Delay)
+	workers := max(opts.Workers, 1)
 
 	for len(queue) > 0 && fetched < opts.MaxPages {
-		item := queue[0]
-		queue = queue[1:]
+		n := min(workers, len(queue), opts.MaxPages-fetched)
+		batch := queue[:n]
+		queue = queue[n:]
 
-		if fetched > 0 {
-			time.Sleep(delay)
+		results := make([]result, n)
+		var wg sync.WaitGroup
+		for i, item := range batch {
+			if fetched > 0 {
+				time.Sleep(delay)
+			}
+			fetched++
+			wg.Go(func() {
+				results[i].page, results[i].err = fetch(item.url)
+			})
 		}
-		fetched++
 
-		page, err := fetch(item.url)
-		if err != nil {
-			if item.depth == 0 {
+		wg.Wait()
+
+		for i, item := range batch {
+			page, err := results[i].page, results[i].err
+			if err != nil {
+				if item.depth == 0 {
+					return err
+				}
+				fmt.Printf("  error: %v\n", err)
+				failed++
+				continue
+			}
+
+			seen[page.URL] = true
+
+			base, err := url.Parse(page.URL)
+			if err != nil {
 				return err
 			}
-			fmt.Printf("  error: %v\n", err)
-			failed++
-			continue
-		}
-
-		seen[page.URL] = true
-
-		base, err := url.Parse(page.URL)
-		if err != nil {
-			return err
-		}
-		if base.Host != site.Host {
-			fmt.Printf("skip: %s redirected off-site to %s\n", item.url, page.URL)
-			continue
-		}
-
-		if !strings.HasPrefix(page.ContentType, "text/html") {
-			fmt.Printf("[%d/%d] depth %d  %s  (not HTML)\n", fetched, opts.MaxPages, item.depth, page.URL)
-			continue
-		}
-
-		newLinks, err := extractLinks(base, page.Body)
-		if err != nil {
-			return fmt.Errorf("extracting links from %s: %w", page.URL, err)
-		}
-
-		fmt.Printf("[%d/%d] depth %d  %s  (%d links)\n", fetched, opts.MaxPages, item.depth, page.URL, len(newLinks))
-
-		if err := handle(page); err != nil {
-			return err
-		}
-
-		if item.depth >= opts.MaxDepth {
-			continue
-		}
-
-		for _, link := range newLinks {
-			if seen[link] {
+			if base.Host != site.Host {
+				fmt.Printf("skip: %s redirected off-site to %s\n", item.url, page.URL)
 				continue
 			}
 
-			newlink, err := url.Parse(link)
-			if err != nil || newlink.Host != site.Host {
+			if !strings.HasPrefix(page.ContentType, "text/html") {
+				fmt.Printf("[%d/%d] depth %d  %s  (not HTML)\n", fetched, opts.MaxPages, item.depth, page.URL)
 				continue
 			}
 
-			if !robots.Test(newlink.RequestURI()) {
+			newLinks, err := extractLinks(base, page.Body)
+			if err != nil {
+				return fmt.Errorf("extracting links from %s: %w", page.URL, err)
+			}
+
+			fmt.Printf("[%d/%d] depth %d  %s  (%d links)\n", fetched, opts.MaxPages, item.depth, page.URL, len(newLinks))
+
+			if err := handle(page); err != nil {
+				return err
+			}
+
+			if item.depth >= opts.MaxDepth {
 				continue
 			}
 
-			seen[link] = true
-			queue = append(queue, queued{url: link, depth: item.depth + 1})
+			for _, link := range newLinks {
+				if seen[link] {
+					continue
+				}
+
+				newlink, err := url.Parse(link)
+				if err != nil || newlink.Host != site.Host {
+					continue
+				}
+
+				if !robots.Test(newlink.RequestURI()) {
+					continue
+				}
+
+				seen[link] = true
+				queue = append(queue, queued{url: link, depth: item.depth + 1})
+			}
 		}
 	}
 

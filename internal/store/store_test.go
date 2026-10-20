@@ -261,3 +261,25 @@ func TestAllChunks(t *testing.T) {
 		}
 	}
 }
+
+func TestSites(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Saving the same site twice is harmless.
+	for _, u := range []string{"https://b.example/", "https://a.example/", "https://b.example/"} {
+		if err := s.SaveSite(u); err != nil {
+			t.Fatalf("SaveSite(%s): %v", u, err)
+		}
+	}
+	got, err := s.ListSites()
+	if err != nil {
+		t.Fatalf("ListSites: %v", err)
+	}
+	if want := []string{"https://a.example/", "https://b.example/"}; !slices.Equal(got, want) {
+		t.Errorf("ListSites = %q, want %q", got, want)
+	}
+}

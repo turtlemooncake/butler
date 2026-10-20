@@ -68,87 +68,93 @@ func TestEmbedCountMismatch(t *testing.T) {
 	}
 }
 
-func TestChat(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/chat" {
-			t.Errorf("request = %s %s, want POST /api/chat", r.Method, r.URL.Path)
+// chatServer starts a fake Ollama that answers every request with status and
+// reply, and stores the request body it got in *body.
+func chatServer(t *testing.T, status int, reply string, body *[]byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Errorf("path = %s, want /api/chat", r.URL.Path)
 		}
-		body, err := io.ReadAll(r.Body)
+		b, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("reading request: %v", err)
+			t.Errorf("reading request: %v", err)
 		}
-
-		var req chatRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Errorf("decoding request: %v", err)
-		}
-		if req.Model != "test-model" {
-			t.Errorf("model = %q, want %q", req.Model, "test-model")
-		}
-		if len(req.Messages) != 2 {
-			t.Fatalf("got %d messages, want 2: %+v", len(req.Messages), req.Messages)
-		}
-		if req.Messages[0] != (Message{Role: "system", Content: "be brief"}) {
-			t.Errorf("message 0 = %+v, want the system message", req.Messages[0])
-		}
-		if req.Messages[1] != (Message{Role: "user", Content: "hi?"}) {
-			t.Errorf("message 1 = %+v, want the user message", req.Messages[1])
-		}
-
-		// req.Stream is false whether the client sent false or nothing at all.
-		// The map tells the two apart: a missing key gives nil, and nil != false.
-		var raw map[string]any
-		if err := json.Unmarshal(body, &raw); err != nil {
-			t.Errorf("decoding request as a map: %v", err)
-		}
-		for _, key := range []string{"stream", "think"} {
-			if raw[key] != false {
-				t.Errorf("%q = %v, want false", key, raw[key])
-			}
-		}
-
-		w.Write([]byte(`{"model":"test-model","message":{"role":"assistant","content":"hi [1]"},"done":true}`))
+		*body = b
+		w.WriteHeader(status)
+		w.Write([]byte(reply))
 	}))
+}
+
+func TestChat(t *testing.T) {
+	// A streamed reply: one JSON object per line, the last with "done": true.
+	// The line after it must be ignored.
+	var body []byte
+	srv := chatServer(t, http.StatusOK, `{"message":{"role":"assistant","content":"hi"},"done":false}
+{"message":{"role":"assistant","content":" [1]"},"done":false}
+{"message":{"role":"assistant","content":""},"done":true}
+{"message":{"role":"assistant","content":"after done"},"done":false}
+`, &body)
 	defer srv.Close()
 
 	c := &Client{BaseURL: srv.URL}
-	got, err := c.Chat("test-model", []Message{
+	var pieces []string
+	err := c.Chat("test-model", []Message{
 		{Role: "system", Content: "be brief"},
 		{Role: "user", Content: "hi?"},
+	}, func(s string) {
+		pieces = append(pieces, s)
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if got != "hi [1]" {
-		t.Errorf("Chat = %q, want %q", got, "hi [1]")
+	if got := strings.Join(pieces, ""); got != "hi [1]" {
+		t.Errorf("reply = %q, want %q (pieces %q)", got, "hi [1]", pieces)
+	}
+
+	var req chatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decoding request: %v", err)
+	}
+	if req.Model != "test-model" || len(req.Messages) != 2 || req.Messages[0].Role != "system" {
+		t.Errorf("request = %+v", req)
+	}
+
+	// A map tells "sent false" apart from "not sent at all".
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decoding request as a map: %v", err)
+	}
+	if raw["stream"] != true {
+		t.Errorf(`"stream" = %v, want true`, raw["stream"])
+	}
+	if raw["think"] != false {
+		t.Errorf(`"think" = %v, want false`, raw["think"])
 	}
 }
 
-func TestChatError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"error":"model 'nope' not found"}`))
-	}))
-	defer srv.Close()
-
-	c := &Client{BaseURL: srv.URL}
-	_, err := c.Chat("nope", []Message{{Role: "user", Content: "hi"}})
-	if err == nil {
-		t.Fatal("Chat: got no error, want one")
+func TestChatErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		reply  string
+		want   string // the error must contain this
+	}{
+		{"missing model", http.StatusNotFound, `{"error":"model 'nope' not found"}`, "not found"},
+		{"error mid-stream", http.StatusOK, `{"message":{"content":"hi"},"done":false}` + "\n" + `{"error":"out of memory"}`, "out of memory"},
+		{"empty reply", http.StatusOK, `{"message":{"content":""},"done":true}`, "empty reply"},
+		{"cut off", http.StatusOK, `{"message":{"content":"hi"},"done":false}`, "EOF"},
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want it to contain %q", err, "not found")
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var body []byte
+			srv := chatServer(t, tc.status, tc.reply, &body)
+			defer srv.Close()
 
-func TestChatEmpty(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"model":"test-model","message":{"role":"assistant","content":""},"done":true}`))
-	}))
-	defer srv.Close()
-
-	c := &Client{BaseURL: srv.URL}
-	if _, err := c.Chat("test-model", []Message{{Role: "user", Content: "hi"}}); err == nil {
-		t.Error("Chat with an empty reply: got no error, want one")
+			c := &Client{BaseURL: srv.URL}
+			err := c.Chat("test-model", []Message{{Role: "user", Content: "hi"}}, func(string) {})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("Chat error = %v, want one containing %q", err, tc.want)
+			}
+		})
 	}
 }

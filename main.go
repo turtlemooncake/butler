@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"maps"
+	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,19 +20,55 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: butler <crawl|index|ask> [args]")
+	fmt.Fprintln(os.Stderr, "usage: butler <crawl|refresh|index|ask> [args]")
 	os.Exit(1)
 	return
 }
 
-func runCrawl(args []string) error {
-	var opts crawler.Options
-	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
+// used by crawl and refresh
+func crawlFlags(fs *flag.FlagSet) (opts *crawler.Options, dbPath *string) {
+	opts = &crawler.Options{}
 	fs.IntVar(&opts.MaxPages, "max-pages", 50, "stop after fetching this many pages")
 	fs.IntVar(&opts.MaxDepth, "max-depth", 3, "how many links away from the start URL to go")
-	fs.DurationVar(&opts.Delay, "delay", time.Second, "wait between requests")
-	dbPath := fs.String("db", "butler.db", "SQLite database file")
+	fs.DurationVar(&opts.Delay, "delay", time.Second, "wait between starting requests on workers")
+	fs.IntVar(&opts.Workers, "workers", 4, "how many pages to fetch at once")
+	dbPath = fs.String("db", "butler.db", "SQLite database file")
+	return opts, dbPath
+}
 
+// crawlSite crawls start and saves each page's text. It returns how many
+// pages it saved, and how many of those were new or had changed.
+func crawlSite(st *store.Store, start string, opts crawler.Options) (saved, changed int, err error) {
+	err = crawler.Crawl(start, opts, func(p crawler.Page) error {
+		title, text, err := extract.Extract(p.URL, p.Body)
+		if err != nil {
+			fmt.Printf("not saved: %s: %s\n", p.URL, err)
+			return nil
+		}
+		if text == "" {
+			fmt.Printf("not saved: %s: no text found\n", p.URL)
+			return nil
+		}
+
+		// A new page gives ErrNotFound and an empty old, so it counts as changed.
+		old, err := st.GetPage(p.URL)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if old.Text != text {
+			changed++
+		}
+
+		saved++
+		return st.SavePage(store.Page{URL: p.URL, Title: title, Text: text, FetchedAt: time.Now()})
+	})
+	return saved, changed, err
+}
+
+// crawls one site and saves each page's text
+func runCrawl(args []string) error {
+	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
+	opts, dbPath := crawlFlags(fs)
 	fs.Parse(args)
 
 	if fs.NArg() != 1 {
@@ -43,25 +83,13 @@ func runCrawl(args []string) error {
 	}
 	defer st.Close()
 
-	saved := 0
-
-	err = crawler.Crawl(fs.Arg(0), opts, func(p crawler.Page) error {
-		title, text, err := extract.Extract(p.URL, p.Body)
-		if err != nil {
-			fmt.Printf("not saved: %s: %s\n", p.URL, err)
-			return nil
-		}
-
-		if text == "" {
-			fmt.Printf("not saved: %s: no text found\n", p.URL)
-			return nil
-		}
-
-		saved++
-		return st.SavePage(store.Page{URL: p.URL, Title: title, Text: text, FetchedAt: time.Now()})
-	})
-
+	saved, changed, err := crawlSite(st, fs.Arg(0), *opts)
 	if err != nil {
+		return err
+	}
+
+	// save site after good crawl
+	if err := st.SaveSite(fs.Arg(0)); err != nil {
 		return err
 	}
 
@@ -69,9 +97,51 @@ func runCrawl(args []string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("saved %d pages to %s, %d new or changed (%d in total)\n", saved, *dbPath, changed, pagesTotal)
+	return nil
+}
 
-	fmt.Printf("saved %d pages to %s (%d in total)\n", saved, *dbPath, pagesTotal)
+// crawls every saved site again
+func runRefresh(args []string) error {
+	fs := flag.NewFlagSet("refresh", flag.ExitOnError)
+	opts, dbPath := crawlFlags(fs)
+	fs.Parse(args)
 
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: butler refresh [flags]")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	sites, err := st.ListSites()
+	if err != nil {
+		return err
+	}
+	if len(sites) == 0 {
+		fmt.Printf("no sites in %s; run \"butler crawl\" first\n", *dbPath)
+		return nil
+	}
+
+	changed := 0
+	for _, site := range sites {
+		fmt.Println("refreshing", site)
+		_, c, err := crawlSite(st, site, *opts)
+		if err != nil {
+			fmt.Printf("  error: %v\n", err) // one broken site shouldn't stop the rest
+		}
+		changed += c
+	}
+
+	fmt.Printf("refreshed %d sites, %d pages new or changed\n", len(sites), changed)
+	if changed > 0 {
+		fmt.Println(`run "butler index" to embed them`)
+	}
 	return nil
 }
 
@@ -235,17 +305,78 @@ func runAsk(args []string) error {
 		{Role: "system", Content: rag.SystemPrompt},
 		{Role: "user", Content: rag.BuildPrompt(question, hits)},
 	}
-	answer, err := client.Chat(*model, messages)
+	err = client.Chat(*model, messages, func(s string) { fmt.Print(s) })
+	fmt.Println()
 	if err != nil {
 		return fmt.Errorf("asking %s: %w", *model, err)
 	}
 
-	fmt.Println(strings.TrimSpace(answer))
+	if err != nil {
+		return fmt.Errorf("asking %s: %w", *model, err)
+	}
+
 	fmt.Println()
 	fmt.Println("Sources:")
 	for i, h := range hits {
 		fmt.Printf("  [%d] %.2f  %s\n", i+1, h.Score, h.Chunk.URL)
 	}
+	return nil
+}
+
+func runsStats(args []string) error {
+	fs := flag.NewFlagSet("index", flag.ExitOnError)
+	dbPath := fs.String("db", "butler.db", "SQLite database file")
+	fs.Parse(args)
+
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: butler refresh [flags]")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	pages, err := st.ListPages()
+	if err != nil {
+		return err
+	}
+
+	chunkCount, err := st.CountChunks()
+	if err != nil {
+		return err
+	}
+
+	sites, err := st.ListSites()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Pages: %d, Chunks: %d, Sites: %d \n", len(pages), chunkCount, len(sites))
+
+	var oldest time.Time
+	perHost := map[string]int{}
+	for _, page := range pages {
+		if u, err := url.Parse(page.URL); err == nil {
+			perHost[u.Host]++
+		}
+		if oldest.IsZero() || page.FetchedAt.Before(oldest) {
+			oldest = page.FetchedAt
+		}
+	}
+	if len(pages) > 0 {
+		fmt.Printf("Oldest page: %s\n", oldest.Local().Format(time.DateTime))
+	}
+
+	sortedPerHost := slices.Sorted(maps.Keys(perHost))
+	fmt.Println("Hosts and their page counts:")
+	for _, host := range sortedPerHost {
+		fmt.Printf("%s: %d \n", host, perHost[host])
+	}
+
 	return nil
 }
 
@@ -263,6 +394,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "crawl:", err)
 			os.Exit(1)
 		}
+	case "refresh":
+		if err := runRefresh(args); err != nil {
+			fmt.Fprintln(os.Stderr, "refresh:", err)
+			os.Exit(1)
+		}
 	case "index":
 		if err := runIndex(args); err != nil {
 			fmt.Fprintln(os.Stderr, "index:", err)
@@ -271,6 +407,11 @@ func main() {
 	case "ask":
 		if err := runAsk(args); err != nil {
 			fmt.Fprintln(os.Stderr, "ask:", err)
+			os.Exit(1)
+		}
+	case "stats":
+		if err := runsStats(args); err != nil {
+			fmt.Fprintln(os.Stderr, "stats:", err)
 			os.Exit(1)
 		}
 	default:
